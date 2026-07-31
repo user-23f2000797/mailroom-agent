@@ -1,0 +1,33 @@
+# Render Blueprint — https://render.com/docs/blueprint-spec
+#
+# Deploy: push this repo to GitHub, then in Render dashboard choose
+# "New + > Blueprint" and point it at the repo. Render reads this file
+# automatically. Or skip this file entirely and use "New + > Web Service"
+# with manual settings (see README.md) — either works.
+#
+# NOTE: the `disk` section (persistent storage for the SQLite DB) only
+# takes effect on paid plans. On the free plan, Render will deploy fine
+# but ignore the disk block — meaning /app/data resets whenever the
+# instance spins down from inactivity. Upgrade `plan` to `starter` (or
+# higher) for real persistence.
+
+services:
+  - type: web
+    name: mailroom-agent
+    runtime: docker
+    plan: starter          # change to "free" to try it without persistence
+    region: oregon         # pick whatever region is closest to you
+    healthCheckPath: /health
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false        # set this manually in the Render dashboard — never commit secrets
+      - key: OPENAI_MODEL
+        value: gpt-4o-mini
+      - key: MAILROOM_DB_PATH
+        value: /app/data/mailroom.db
+      - key: MAILROOM_HMAC_SECRET_PATH
+        value: /app/data/hmac_secret
+    disk:
+      name: mailroom-data
+      mountPath: /app/data
+      sizeGB: 1
