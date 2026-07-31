@@ -11,6 +11,8 @@ ever executed before a receipt is verified.
 
 from __future__ import annotations
 
+import asyncio
+import os
 from typing import Any
 
 from . import ai, db, safety
@@ -22,6 +24,15 @@ from .hashing import (
 from .receipt_tokens import verify_receipt_token
 from .schemas import CommitRequest, Outcome, Proposal, ProposeRequest
 from .tools import execute
+
+# How many dossiers we classify concurrently. This is the fix for the
+# "propose returned HTTP 504" failure mode: 64-70 dossiers processed
+# SEQUENTIALLY (each an OpenAI round-trip of ~1-3s) blows well past both
+# our own timeout and the spec's 55s/request limit. Running them
+# concurrently brings a 70-dossier batch down to a handful of seconds.
+# Tune via env var if you hit OpenAI rate limits on a low usage tier.
+AI_CONCURRENCY = int(os.environ.get("AI_CONCURRENCY", "20"))
+_ai_semaphore = asyncio.Semaphore(AI_CONCURRENCY)
 
 
 class ConflictError(Exception):
@@ -56,7 +67,8 @@ async def _decide_one(dossier: dict) -> dict:
     if cached is not None:
         return cached
 
-    raw_decision = await ai.classify_dossier(dossier)
+    async with _ai_semaphore:
+        raw_decision = await ai.classify_dossier(dossier)
     gated_decision = safety.apply_safety_gates(dossier, raw_decision)
 
     call_id = _call_id_for(content_hash)
@@ -93,9 +105,36 @@ async def propose(request: ProposeRequest) -> dict:
         # exact replay: return the byte-equivalent stored response, no model work
         return existing["response"]
 
+    # Classify all dossiers CONCURRENTLY (bounded by AI_CONCURRENCY). This is
+    # the fix for propose() timing out on ~70 dossiers: sequential model
+    # calls at even 1-2s each blow past the spec's 55s/request budget.
+    # return_exceptions=True so one dossier's unexpected failure can't sink
+    # the whole batch — it degrades to a safe request_confirmation instead.
+    raw_results = await asyncio.gather(
+        *[_decide_one(d) for d in dossiers_raw], return_exceptions=True
+    )
+
+    decisions: list[dict] = []
+    for dossier, result in zip(dossiers_raw, raw_results):
+        if isinstance(result, BaseException):
+            content_hash = dossier_fingerprint(dossier)
+            decisions.append(
+                {
+                    "dossier_id": str(dossier.get("dossierId")),
+                    "call_id": _call_id_for(content_hash),
+                    "action": "request_confirmation",
+                    "payload": {
+                        "queue": "triage-fallback",
+                        "reason": f"internal_error: {type(result).__name__}: {result}",
+                    },
+                    "evidence": ["automated fallback: unexpected error during classification"],
+                }
+            )
+        else:
+            decisions.append(result)
+
     proposals: list[dict] = []
-    for dossier in dossiers_raw:
-        decision = await _decide_one(dossier)
+    for decision in decisions:
         proposal = {
             "dossierId": decision["dossier_id"],
             "callId": decision["call_id"],
