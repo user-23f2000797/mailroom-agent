@@ -67,12 +67,25 @@ async def agent_endpoint(request: Request):
         try:
             peek = OperationPeek.model_validate(body)
         except ValidationError as e:
+            logger.error("OPERATION PEEK FAILED. raw_body=%s errors=%s", json.dumps(body)[:4000] if isinstance(body, (dict, list)) else str(body)[:4000], e.errors())
             return _json_response({"status": "error", "error": "malformed_request", "detail": e.errors()}, 422)
 
         if peek.operation not in ("propose", "commit"):
             return _json_response(
                 {"status": "error", "error": "invalid_operation", "operation": peek.operation}, 400
             )
+
+        # Always-on lightweight request log — confirms traffic is arriving
+        # at all, independent of whether validation succeeds.
+        item_key = "dossiers" if peek.operation == "propose" else "receipts"
+        item_count = len(body.get(item_key, [])) if isinstance(body, dict) else 0
+        logger.info(
+            "REQUEST operation=%s evaluationId=%s %s_count=%s",
+            peek.operation,
+            body.get("evaluationId") if isinstance(body, dict) else None,
+            item_key,
+            item_count,
+        )
 
         return await asyncio.wait_for(_dispatch(peek.operation, body), timeout=REQUEST_TIMEOUT_SECONDS)
 
@@ -88,6 +101,15 @@ async def _dispatch(operation: str, body: dict) -> JSONResponse:
         try:
             req = ProposeRequest.model_validate(body)
         except ValidationError as e:
+            # Log the FULL raw body + validation errors here — this is the
+            # only way to see what a real grader payload actually looks
+            # like when our schema guess is wrong. Check Render's log
+            # stream after a failed grading attempt.
+            logger.error(
+                "PROPOSE VALIDATION FAILED. raw_body=%s errors=%s",
+                json.dumps(body)[:4000],
+                e.errors(),
+            )
             return _json_response({"status": "error", "error": "malformed_propose", "detail": e.errors()}, 422)
 
         try:
@@ -101,6 +123,11 @@ async def _dispatch(operation: str, body: dict) -> JSONResponse:
     try:
         req = CommitRequest.model_validate(body)
     except ValidationError as e:
+        logger.error(
+            "COMMIT VALIDATION FAILED. raw_body=%s errors=%s",
+            json.dumps(body)[:4000],
+            e.errors(),
+        )
         return _json_response({"status": "error", "error": "malformed_commit", "detail": e.errors()}, 422)
 
     try:
