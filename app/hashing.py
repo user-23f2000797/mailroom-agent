@@ -99,6 +99,7 @@ def proposal_digest(proposal: dict) -> str:
     view = {
         "dossierId": proposal.get("dossierId"),
         "callId": proposal.get("callId"),
+        "inputDigest": proposal.get("inputDigest"),
         "action": proposal.get("action"),
         "payload": proposal.get("payload"),
     }

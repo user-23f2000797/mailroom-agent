@@ -131,6 +131,7 @@ class ProposeRequest(BaseModel):
 class Proposal(BaseModel):
     dossierId: str
     callId: str
+    inputDigest: str  # canonical content fingerprint of the dossier this proposal is bound to
     action: Action
     payload: dict[str, Any]
     evidence: list[str]  # smallest set of cited lines proving the decision
